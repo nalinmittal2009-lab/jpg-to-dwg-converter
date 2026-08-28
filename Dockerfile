@@ -1,17 +1,19 @@
 FROM python:3.10-slim
 
-# Install core dependencies
+# Install system dependencies including UI libraries required by ODA
 RUN apt-get update && apt-get install -y \
     wget \
     potrace \
     xvfb \
     libgl1 \
     libglib2.0-0 \
+    libxkbcommon0 \
+    libxcb-cursor0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Dynamically scrape the Open Design website to find and install the latest .deb file
+# Dynamically scrape and install the latest ODA File Converter package
 RUN apt-get update \
     && ODA_FILE=$(wget -qO- https://www.opendesign.com/guestfiles/oda_file_converter | grep -oE 'ODAFileConverter_QT[a-zA-Z0-9_.]+\.deb' | head -n 1) \
     && echo "Found installer: $ODA_FILE" \
