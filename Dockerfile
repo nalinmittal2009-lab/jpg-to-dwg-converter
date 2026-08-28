@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# Install system dependencies, font config, and UI libraries required by ODA
+# Install system dependencies and all required Qt/X11 graphics libraries
 RUN apt-get update && apt-get install -y \
     wget \
     potrace \
@@ -8,7 +8,17 @@ RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     libxkbcommon0 \
+    libxkbcommon-x11-0 \
     libxcb-cursor0 \
+    libxcb-xinerama0 \
+    libxcb-icccm4 \
+    libxcb-image0 \
+    libxcb-keysyms1 \
+    libxcb-render-util0 \
+    libxcb-shape0 \
+    libxcb-randr0 \
+    libxcb-xfixes0 \
+    libx11-xcb1 \
     libfontconfig1 \
     libfreetype6 \
     && rm -rf /var/lib/apt/lists/*
@@ -22,6 +32,12 @@ RUN apt-get update \
     && wget -O /tmp/oda.deb "https://www.opendesign.com/guestfiles/get?filename=$ODA_FILE" \
     && apt-get install -y -f /tmp/oda.deb \
     && rm /tmp/oda.deb
+
+# Create an automatic headless wrapper script for ODAFileConverter to bypass the Qt "xcb" screen error
+RUN TARGET_DIR=$(ls -d /usr/bin/ODAFileConverter_* | head -n 1) && \
+    echo '#!/bin/bash' > /usr/local/bin/ODAFileConverter && \
+    echo "exec xvfb-run -a $TARGET_DIR/ODAFileConverter \"\$@\"" >> /usr/local/bin/ODAFileConverter && \
+    chmod +x /usr/local/bin/ODAFileConverter
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
