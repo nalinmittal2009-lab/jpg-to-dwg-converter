@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# Install system dependencies including UI libraries required by ODA
+# Install system dependencies, font config, and UI libraries required by ODA
 RUN apt-get update && apt-get install -y \
     wget \
     potrace \
@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libxkbcommon0 \
     libxcb-cursor0 \
+    libfontconfig1 \
+    libfreetype6 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
