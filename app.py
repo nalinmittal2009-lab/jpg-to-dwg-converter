@@ -10,7 +10,6 @@ import numpy as np
 import ezdxf
 from ezdxf.addons import odafc
 
-# Tell ezdxf where the ODA Converter Linux CLI is installed
 odafc.unix_exec_path = "/usr/bin/ODAFileConverter"
 
 app = FastAPI(title="JPG to CAD Converter API")
@@ -78,7 +77,7 @@ HTML_CONTENT = """
 
                 <div class="mt-8 grid grid-cols-2 gap-4">
                     <button onclick="downloadCAD('DXF')" class="w-full py-3 bg-gray-700 hover:bg-gray-600 text-white font-bold rounded-lg transition-colors">Download .DXF</button>
-                    <button onclick="downloadCAD('DWG')" class="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-colors">Download .DWG</button>
+                    <button onclick="downloadCAD('DWG')" class="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-colors shadow-lg shadow-blue-500/30">Download .DWG</button>
                 </div>
                 
                 <div id="status-bar" class="mt-4 text-center text-sm font-semibold text-red-400 hidden"></div>
@@ -150,8 +149,6 @@ HTML_CONTENT = """
 
             try {
                 const response = await fetch("/convert", { method: "POST", body: formData });
-                
-                // Read exact server errors if compilation crashes
                 if(!response.ok) {
                     const errData = await response.json();
                     throw new Error(errData.error || "Unknown server error");
@@ -219,19 +216,14 @@ async def convert(file: UploadFile = File(...), threshold: int = Form(127), inve
         bmp_path = process_image(image_bytes, threshold, invert, smoothing, temp_dir)
         dxf_path = os.path.join(temp_dir, "temp.dxf")
         
-        # Run Potrace
         trace_result = subprocess.run(["potrace", bmp_path, "-b", "dxf", "-o", dxf_path], capture_output=True, text=True)
         if trace_result.returncode != 0:
             raise Exception("Potrace engine failed: " + trace_result.stderr)
         
-        # Load into CAD
-        try:
-            doc = ezdxf.readfile(dxf_path)
-            doc.layers.add("OUTLINES", color=7)
-            for entity in doc.modelspace():
-                entity.dxf.layer = "OUTLINES"
-        except Exception as e:
-            raise Exception("ezdxf CAD assembly failed: " + str(e))
+        doc = ezdxf.readfile(dxf_path)
+        doc.layers.add("OUTLINES", color=7)
+        for entity in doc.modelspace():
+            entity.dxf.layer = "OUTLINES"
             
         if format.upper() == "DXF":
             doc.saveas(dxf_path)
@@ -242,7 +234,9 @@ async def convert(file: UploadFile = File(...), threshold: int = Form(127), inve
             try:
                 odafc.export_dwg(doc, dwg_path, version=version)
             except Exception as e:
-                raise Exception("DWG Compilation Engine failed (ODA issue): " + str(e))
+                # If ODA completed with return code 0 but threw a warning via stderr, verify if the file exists anyway
+                if not os.path.exists(dwg_path):
+                    raise Exception("DWG Compilation Engine failed: " + str(e))
                 
             if os.path.exists(dwg_path):
                 return FileResponse(dwg_path, filename=f"{file.filename.split('.')[0]}.dwg", background=BackgroundTask(shutil.rmtree, temp_dir))
