@@ -28,12 +28,12 @@ WORKDIR /app
 # Dynamically scrape and install the latest ODA File Converter package
 RUN apt-get update \
     && ODA_FILE=$(wget -qO- https://www.opendesign.com/guestfiles/oda_file_converter | grep -oE 'ODAFileConverter_QT[a-zA-Z0-9_.]+\.deb' | head -n 1) \
-    && echo "Found installer: $ODA_FILE" \
+    echo "Found installer: $ODA_FILE" \
     && wget -O /tmp/oda.deb "https://www.opendesign.com/guestfiles/get?filename=$ODA_FILE" \
     && apt-get install -y -f /tmp/oda.deb \
     && rm /tmp/oda.deb
 
-# Create an automatic headless wrapper script for ODAFileConverter to bypass the Qt "xcb" screen error
+# Create headless wrapper script for ODAFileConverter
 RUN TARGET_DIR=$(ls -d /usr/bin/ODAFileConverter_* | head -n 1) && \
     echo '#!/bin/bash' > /usr/local/bin/ODAFileConverter && \
     echo "exec xvfb-run -a $TARGET_DIR/ODAFileConverter \"\$@\"" >> /usr/local/bin/ODAFileConverter && \
@@ -43,6 +43,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
+
+# Set runtime directory environment variable to prevent Qt warnings
+ENV XDG_RUNTIME_DIR=/tmp/runtime-root
 
 EXPOSE 8000
 CMD ["sh", "-c", "xvfb-run -a uvicorn app:app --host 0.0.0.0 --port ${PORT:-10000}"]
