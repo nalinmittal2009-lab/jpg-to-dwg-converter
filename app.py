@@ -1,3 +1,4 @@
+
 import os
 import shutil
 import tempfile
@@ -342,11 +343,11 @@ async def convert(
         run_potrace(thick_bmp, thick_dxf)
         run_potrace(thin_bmp, thin_dxf)
         
-        # Build Master CAD Document
+        # Build Master CAD Document with neutral default colors (7)
         master_doc = ezdxf.new(dxfversion='R2010')
         master_doc.layers.add("THICK_LINES", color=7)
-        master_doc.layers.add("THIN_LINES", color=3)
-        master_doc.layers.add("OCR_TEXT", color=2)
+        master_doc.layers.add("THIN_LINES", color=7)
+        master_doc.layers.add("OCR_TEXT", color=7)
         
         # Safely import entities to prevent NoneType object errors
         for d_path, layer_name in [(thick_dxf, "THICK_LINES"), (thin_dxf, "THIN_LINES")]:
