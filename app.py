@@ -330,19 +330,17 @@ async def convert(
             if len(word) > 0:
                 x, y, w, h = (ocr_data['left'][i], ocr_data['top'][i], ocr_data['width'][i], ocr_data['height'][i])
                 
-                # Heuristic: If it contains a number, treat as a Dimension. Else, Text.
                 if any(char.isdigit() for char in word):
                     dim_entities.append({"text": word, "x": x, "y": -y, "w": w, "h": h})
                 elif len(word) > 1:
                     text_entities.append({"text": word, "x": x, "y": -y, "h": h})
                 
-                # Mask out the text so it isn't drawn as vector lines
                 cv2.rectangle(img, (x-4, y-4), (x+w+4, y+h+4), (255, 255, 255), -1)
 
         # 2. Base Thresholding
         _, bin_img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
-        # 3. Morphological Skeletonization (Fixes thick/cluster of lines by thinning to 1 pixel)
+        # 3. Morphological Skeletonization
         skel = np.zeros(bin_img.shape, np.uint8)
         img_temp = bin_img.copy()
         element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3,3))
@@ -355,7 +353,6 @@ async def convert(
             if cv2.countNonZero(img_temp) == 0:
                 break
                 
-        # Invert to prepare for Potrace (Black traces on White background)
         potrace_input = cv2.bitwise_not(skel)
         bmp_path = os.path.join(temp_dir, "skel.bmp")
         dxf_path = os.path.join(temp_dir, "skel.dxf")
@@ -370,7 +367,6 @@ async def convert(
         master_doc.layers.add("ANNOTATIONS", color=2)
         master_doc.layers.add("DIMENSIONS", color=3)
         
-        # Safely import the skeletonized vectors
         if os.path.exists(dxf_path):
             temp_doc = ezdxf.readfile(dxf_path)
             for entity in temp_doc.modelspace():
@@ -385,17 +381,16 @@ async def convert(
         for t in text_entities:
             msp.add_text(t["text"], dxfattribs={'layer': 'ANNOTATIONS', 'height': t["h"]}).set_placement((t["x"], t["y"]))
 
-        # Add True Associative Dimensions using ezDXF dimstyle rendering
+        # Add True Associative Dimensions using the correct override argument
         for d in dim_entities:
             dim = msp.add_linear_dim(
                 base=(d["x"], d["y"] + d["h"] + 5), 
                 p1=(d["x"] - 20, d["y"]), 
                 p2=(d["x"] + d["w"] + 20, d["y"]), 
+                text=d["text"],  # Correctly overrides the dimension value
                 dxfattribs={'layer': 'DIMENSIONS'}
             )
-            # Override dimension text explicitly to match the drawn OCR number
-            dim.dxf.text = d["text"]
-            dim.render() # Crucial: Automatically generates CAD arrows and extension lines
+            dim.render()
 
         # 6. Page Scaling Transformation
         if pagesize != "ORIGINAL":
