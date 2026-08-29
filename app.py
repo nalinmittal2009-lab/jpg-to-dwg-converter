@@ -29,7 +29,7 @@ def init_db():
 
 init_db()
 
-app = FastAPI(title="Pro CAD Converter API")
+app = FastAPI(title="Pro CAD Converter")
 os.makedirs("static_reviews", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static_reviews"), name="static")
 
@@ -55,7 +55,7 @@ HTML_CONTENT = """
         <header class="mb-10 flex justify-between items-center">
             <div>
                 <h1 class="text-4xl font-extrabold tracking-tight text-blue-600 dark:text-blue-500 mb-2">Image to CAD Pro</h1>
-                <p class="text-gray-500 dark:text-gray-400">Single Line Skeletonization • Native Dimensions</p>
+                <p class="text-gray-500 dark:text-gray-400">Auto-Scaling • OCR Text • Multi-Layer</p>
             </div>
             <button onclick="toggleTheme()" class="p-3 rounded-full bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 transition">
                 <span id="theme-icon">🌙</span>
@@ -63,7 +63,6 @@ HTML_CONTENT = """
         </header>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
-            <!-- Left: Conversion Engine -->
             <div class="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 border border-gray-200 dark:border-gray-700">
                 <div id="dropzone" onclick="document.getElementById('file-input').click()" class="border-2 border-dashed border-gray-400 dark:border-gray-600 rounded-lg p-12 text-center cursor-pointer hover:border-blue-500 transition-all mb-6">
                     <p class="text-gray-500 dark:text-gray-300 font-medium" id="drop-text">Drag & Drop JPG here or <span class="text-blue-500">Browse</span></p>
@@ -116,7 +115,6 @@ HTML_CONTENT = """
                 <div id="status-bar" class="mt-4 text-center text-sm font-semibold text-blue-500 hidden"></div>
             </div>
 
-            <!-- Right: Submit Review -->
             <div class="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 border border-gray-200 dark:border-gray-700">
                 <h3 class="text-xl font-bold mb-4">Leave a Review</h3>
                 <div class="space-y-4">
@@ -136,7 +134,6 @@ HTML_CONTENT = """
             </div>
         </div>
 
-        <!-- Community Reviews Feed -->
         <div class="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 border border-gray-200 dark:border-gray-700">
             <div class="flex justify-between items-center mb-6">
                 <h3 class="text-xl font-bold">Community Reviews</h3>
@@ -171,7 +168,7 @@ HTML_CONTENT = """
             const statusBox = document.getElementById("status-bar");
             statusBox.classList.remove("hidden", "text-red-400", "text-green-400");
             statusBox.classList.add("text-blue-500", "animate-pulse");
-            statusBox.innerText = `Skeletonizing lines and building associative CAD...`;
+            statusBox.innerText = `Auto-optimizing and building ${formatType}...`;
 
             const formData = new FormData();
             formData.append("file", currentFile);
@@ -320,79 +317,52 @@ async def convert(
         np_img = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(np_img, cv2.IMREAD_GRAYSCALE)
         
-        # 1. OCR Data Extraction for Text and Dimensions
         ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
         text_entities = []
-        dim_entities = []
-        
         for i in range(len(ocr_data['text'])):
             word = ocr_data['text'][i].strip()
-            if len(word) > 0:
+            if len(word) > 1:
                 x, y, w, h = (ocr_data['left'][i], ocr_data['top'][i], ocr_data['width'][i], ocr_data['height'][i])
-                
-                if any(char.isdigit() for char in word):
-                    dim_entities.append({"text": word, "x": x, "y": -y, "w": w, "h": h})
-                elif len(word) > 1:
-                    text_entities.append({"text": word, "x": x, "y": -y, "h": h})
-                
-                cv2.rectangle(img, (x-4, y-4), (x+w+4, y+h+4), (255, 255, 255), -1)
+                text_entities.append({"text": word, "x": x, "y": -y, "h": h})
+                cv2.rectangle(img, (x-2, y-2), (x+w+2, y+h+2), (255, 255, 255), -1)
 
-        # 2. Base Thresholding
         _, bin_img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
-        # 3. Morphological Skeletonization
-        skel = np.zeros(bin_img.shape, np.uint8)
-        img_temp = bin_img.copy()
-        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3,3))
-        while True:
-            eroded = cv2.erode(img_temp, element)
-            temp = cv2.dilate(eroded, element)
-            temp = cv2.subtract(img_temp, temp)
-            skel = cv2.bitwise_or(skel, temp)
-            img_temp = eroded.copy()
-            if cv2.countNonZero(img_temp) == 0:
-                break
-                
-        potrace_input = cv2.bitwise_not(skel)
-        bmp_path = os.path.join(temp_dir, "skel.bmp")
-        dxf_path = os.path.join(temp_dir, "skel.dxf")
-        cv2.imwrite(bmp_path, potrace_input)
+        kernel = np.ones((3,3), np.uint8)
+        thick_lines_img = cv2.erode(bin_img, kernel, iterations=1)
+        thin_lines_img = cv2.subtract(bin_img, thick_lines_img)
         
-        # 4. Single-Path Vectorization
-        run_potrace(bmp_path, dxf_path)
+        thick_bmp = os.path.join(temp_dir, "thick.bmp")
+        thin_bmp = os.path.join(temp_dir, "thin.bmp")
+        cv2.imwrite(thick_bmp, cv2.bitwise_not(thick_lines_img))
+        cv2.imwrite(thin_bmp, cv2.bitwise_not(thin_lines_img))
         
-        # 5. Build Master CAD Document
+        thick_dxf = os.path.join(temp_dir, "thick.dxf")
+        thin_dxf = os.path.join(temp_dir, "thin.dxf")
+        run_potrace(thick_bmp, thick_dxf)
+        run_potrace(thin_bmp, thin_dxf)
+        
+        # Build Master CAD Document
         master_doc = ezdxf.new(dxfversion='R2010')
-        master_doc.layers.add("CENTERLINES", color=7)
-        master_doc.layers.add("ANNOTATIONS", color=2)
-        master_doc.layers.add("DIMENSIONS", color=3)
+        master_doc.layers.add("THICK_LINES", color=7)
+        master_doc.layers.add("THIN_LINES", color=3)
+        master_doc.layers.add("OCR_TEXT", color=2)
         
-        if os.path.exists(dxf_path):
-            temp_doc = ezdxf.readfile(dxf_path)
+        # Safely import entities to prevent NoneType object errors
+        for d_path, layer_name in [(thick_dxf, "THICK_LINES"), (thin_dxf, "THIN_LINES")]:
+            if not os.path.exists(d_path): continue
+            temp_doc = ezdxf.readfile(d_path)
             for entity in temp_doc.modelspace():
-                entity.dxf.layer = "CENTERLINES"
+                entity.dxf.layer = layer_name
             importer = Importer(temp_doc, master_doc)
             importer.import_modelspace()
             importer.finalize()
 
         msp = master_doc.modelspace()
         
-        # Add Native Text
         for t in text_entities:
-            msp.add_text(t["text"], dxfattribs={'layer': 'ANNOTATIONS', 'height': t["h"]}).set_placement((t["x"], t["y"]))
+            msp.add_text(t["text"], dxfattribs={'layer': 'OCR_TEXT', 'height': t["h"]}).set_placement((t["x"], t["y"]))
 
-        # Add True Associative Dimensions using the correct override argument
-        for d in dim_entities:
-            dim = msp.add_linear_dim(
-                base=(d["x"], d["y"] + d["h"] + 5), 
-                p1=(d["x"] - 20, d["y"]), 
-                p2=(d["x"] + d["w"] + 20, d["y"]), 
-                text=d["text"],  # Correctly overrides the dimension value
-                dxfattribs={'layer': 'DIMENSIONS'}
-            )
-            dim.render()
-
-        # 6. Page Scaling Transformation
         if pagesize != "ORIGINAL":
             target_w = 297 if pagesize == "A4" else 420
             if units == "cm": target_w /= 10
@@ -401,6 +371,7 @@ async def convert(
             img_w = img.shape[1]
             scale_factor = target_w / img_w
             
+            # Corrected Matrix Scaling: Z must be 1.0, not 0
             transform_matrix = Matrix44.scale(scale_factor, scale_factor, 1.0)
             for entity in msp:
                 if hasattr(entity, 'transform'):
