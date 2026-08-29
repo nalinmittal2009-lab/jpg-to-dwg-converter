@@ -4,7 +4,6 @@ import tempfile
 import subprocess
 import sqlite3
 import datetime
-import math
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -13,7 +12,7 @@ import cv2
 import numpy as np
 import ezdxf
 from ezdxf.math import Matrix44
-from ezdxf.addons import odafc
+from ezdxf.addons import odafc, Importer
 import pytesseract
 
 odafc.unix_exec_path = "/usr/bin/ODAFileConverter"
@@ -53,7 +52,6 @@ HTML_CONTENT = """
 <body class="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 min-h-screen p-6 font-sans transition-colors duration-300">
     <div class="max-w-6xl mx-auto">
         
-        <!-- Header & Theme Toggle -->
         <header class="mb-10 flex justify-between items-center">
             <div>
                 <h1 class="text-4xl font-extrabold tracking-tight text-blue-600 dark:text-blue-500 mb-2">Image to CAD Pro</h1>
@@ -65,7 +63,6 @@ HTML_CONTENT = """
         </header>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
-            <!-- Left: Conversion Engine -->
             <div class="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 border border-gray-200 dark:border-gray-700">
                 <div id="dropzone" onclick="document.getElementById('file-input').click()" class="border-2 border-dashed border-gray-400 dark:border-gray-600 rounded-lg p-12 text-center cursor-pointer hover:border-blue-500 transition-all mb-6">
                     <p class="text-gray-500 dark:text-gray-300 font-medium" id="drop-text">Drag & Drop JPG here or <span class="text-blue-500">Browse</span></p>
@@ -118,7 +115,6 @@ HTML_CONTENT = """
                 <div id="status-bar" class="mt-4 text-center text-sm font-semibold text-blue-500 hidden"></div>
             </div>
 
-            <!-- Right: Submit Review -->
             <div class="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 border border-gray-200 dark:border-gray-700">
                 <h3 class="text-xl font-bold mb-4">Leave a Review</h3>
                 <div class="space-y-4">
@@ -138,7 +134,6 @@ HTML_CONTENT = """
             </div>
         </div>
 
-        <!-- Community Reviews Feed -->
         <div class="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 border border-gray-200 dark:border-gray-700">
             <div class="flex justify-between items-center mb-6">
                 <h3 class="text-xl font-bold">Community Reviews</h3>
@@ -147,14 +142,11 @@ HTML_CONTENT = """
                     <option value="oldest">Oldest First</option>
                 </select>
             </div>
-            <div id="reviews-container" class="space-y-4">
-                <!-- Reviews injected here -->
-            </div>
+            <div id="reviews-container" class="space-y-4"></div>
         </div>
     </div>
 
     <script>
-        // Theme Toggle
         function toggleTheme() {
             const html = document.documentElement;
             html.classList.toggle('dark');
@@ -171,7 +163,6 @@ HTML_CONTENT = """
             }
         }
 
-        // CAD Generation
         async function downloadCAD(formatType) {
             if(!currentFile) return alert("Upload an image first.");
             const statusBox = document.getElementById("status-bar");
@@ -205,7 +196,6 @@ HTML_CONTENT = """
             }
         }
 
-        // Reviews System
         function toggleAnon() {
             const nameInput = document.getElementById('rev-name');
             if(document.getElementById('rev-anon').checked) {
@@ -277,7 +267,6 @@ HTML_CONTENT = """
 def get_ui():
     return HTMLResponse(content=HTML_CONTENT)
 
-# --- REVIEW ENDPOINTS ---
 @app.post("/reviews")
 async def add_review(name: str = Form(...), review: str = Form(...), image: UploadFile = File(None)):
     img_path = None
@@ -307,7 +296,6 @@ def get_reviews(sort: str = "newest"):
     conn.close()
     return JSONResponse(content=rows)
 
-# --- CAD PROCESSING ENGINE ---
 def run_potrace(input_bmp, output_dxf):
     res = subprocess.run(["potrace", input_bmp, "-b", "dxf", "-o", output_dxf], capture_output=True, text=True)
     if res.returncode != 0:
@@ -329,7 +317,6 @@ async def convert(
         np_img = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(np_img, cv2.IMREAD_GRAYSCALE)
         
-        # 1. AI OCR Text Extraction & Masking
         ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
         text_entities = []
         for i in range(len(ocr_data['text'])):
@@ -337,13 +324,10 @@ async def convert(
             if len(word) > 1:
                 x, y, w, h = (ocr_data['left'][i], ocr_data['top'][i], ocr_data['width'][i], ocr_data['height'][i])
                 text_entities.append({"text": word, "x": x, "y": -y, "h": h})
-                # Mask out the text so Potrace doesn't draw it as messy lines
                 cv2.rectangle(img, (x-2, y-2), (x+w+2, y+h+2), (255, 255, 255), -1)
 
-        # 2. Otsu Auto-Optimization
         _, bin_img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
-        # 3. Multi-Layer Line Weight Sorting (Erosion approach)
         kernel = np.ones((3,3), np.uint8)
         thick_lines_img = cv2.erode(bin_img, kernel, iterations=1)
         thin_lines_img = cv2.subtract(bin_img, thick_lines_img)
@@ -358,40 +342,41 @@ async def convert(
         run_potrace(thick_bmp, thick_dxf)
         run_potrace(thin_bmp, thin_dxf)
         
-        # 4. CAD Assembly & Scaling
+        # Build Master CAD Document
         master_doc = ezdxf.new(dxfversion='R2010')
         master_doc.layers.add("THICK_LINES", color=7)
         master_doc.layers.add("THIN_LINES", color=3)
         master_doc.layers.add("OCR_TEXT", color=2)
-        msp = master_doc.modelspace()
         
-        # Merge layers
+        # Safely import entities to prevent NoneType object errors
         for d_path, layer_name in [(thick_dxf, "THICK_LINES"), (thin_dxf, "THIN_LINES")]:
+            if not os.path.exists(d_path): continue
             temp_doc = ezdxf.readfile(d_path)
             for entity in temp_doc.modelspace():
-                copy = msp.add_entity(entity.copy())
-                copy.dxf.layer = layer_name
+                entity.dxf.layer = layer_name
+            importer = Importer(temp_doc, master_doc)
+            importer.import_modelspace()
+            importer.finalize()
 
-        # Add OCR Text natively
+        msp = master_doc.modelspace()
+        
         for t in text_entities:
             msp.add_text(t["text"], dxfattribs={'layer': 'OCR_TEXT', 'height': t["h"]}).set_placement((t["x"], t["y"]))
 
-        # 5. Smart Scaling & Centering
         if pagesize != "ORIGINAL":
             target_w = 297 if pagesize == "A4" else 420
-            
-            # Simple conversion scale factors from native px
             if units == "cm": target_w /= 10
             elif units == "in": target_w /= 25.4
             
             img_w = img.shape[1]
             scale_factor = target_w / img_w
             
-            transform_matrix = Matrix44.scale(scale_factor, scale_factor, 0)
+            # Corrected Matrix Scaling: Z must be 1.0, not 0
+            transform_matrix = Matrix44.scale(scale_factor, scale_factor, 1.0)
             for entity in msp:
-                entity.transform(transform_matrix)
+                if hasattr(entity, 'transform'):
+                    entity.transform(transform_matrix)
                 
-        # 6. Final Export Route
         master_dxf_path = os.path.join(temp_dir, "final.dxf")
         master_doc.saveas(master_dxf_path)
         
@@ -412,3 +397,4 @@ async def convert(
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
+        
