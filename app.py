@@ -1,4 +1,3 @@
-
 import os
 import shutil
 import tempfile
@@ -317,6 +316,7 @@ async def convert(
         image_bytes = await file.read()
         np_img = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(np_img, cv2.IMREAD_GRAYSCALE)
+        img_h, img_w = img.shape[:2]
         
         ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
         text_entities = []
@@ -324,7 +324,11 @@ async def convert(
             word = ocr_data['text'][i].strip()
             if len(word) > 1:
                 x, y, w, h = (ocr_data['left'][i], ocr_data['top'][i], ocr_data['width'][i], ocr_data['height'][i])
-                text_entities.append({"text": word, "x": x, "y": -y, "h": h})
+                
+                # Correct Y-axis coordinate inversion mapping OpenCV top-left origin to AutoCAD bottom-left origin
+                cad_y = img_h - (y + h)
+                text_entities.append({"text": word, "x": x, "y": cad_y, "h": h})
+                
                 cv2.rectangle(img, (x-2, y-2), (x+w+2, y+h+2), (255, 255, 255), -1)
 
         _, bin_img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -369,7 +373,6 @@ async def convert(
             if units == "cm": target_w /= 10
             elif units == "in": target_w /= 25.4
             
-            img_w = img.shape[1]
             scale_factor = target_w / img_w
             
             # Corrected Matrix Scaling: Z must be 1.0, not 0
