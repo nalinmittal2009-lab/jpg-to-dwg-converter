@@ -17,7 +17,6 @@ import pytesseract
 
 odafc.unix_exec_path = "/usr/bin/ODAFileConverter"
 
-# Database Setup for Reviews
 DB_FILE = "reviews.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -55,7 +54,7 @@ HTML_CONTENT = """
         <header class="mb-10 flex justify-between items-center">
             <div>
                 <h1 class="text-4xl font-extrabold tracking-tight text-blue-600 dark:text-blue-500 mb-2">Image to CAD Pro</h1>
-                <p class="text-gray-500 dark:text-gray-400">Auto-Scaling • OCR Text • Multi-Layer</p>
+                <p class="text-gray-500 dark:text-gray-400">Clean Vector Lines • Solid Text Erasure</p>
             </div>
             <button onclick="toggleTheme()" class="p-3 rounded-full bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 transition">
                 <span id="theme-icon">🌙</span>
@@ -168,7 +167,7 @@ HTML_CONTENT = """
             const statusBox = document.getElementById("status-bar");
             statusBox.classList.remove("hidden", "text-red-400", "text-green-400");
             statusBox.classList.add("text-blue-500", "animate-pulse");
-            statusBox.innerText = `Auto-optimizing and building ${formatType}...`;
+            statusBox.innerText = `Cleaning text and compiling ${formatType}...`;
 
             const formData = new FormData();
             formData.append("file", currentFile);
@@ -318,65 +317,67 @@ async def convert(
         img = cv2.imdecode(np_img, cv2.IMREAD_GRAYSCALE)
         img_h, img_w = img.shape[:2]
         
+        # 1. OCR Extraction with strict text cleaning mask
         ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
         text_entities = []
+        
+        # Create a clean white canvas mask to completely erase text blocks from being vectorized
+        mask = img.copy()
         for i in range(len(ocr_data['text'])):
             word = ocr_data['text'][i].strip()
-            if len(word) > 1:
+            conf = int(ocr_data['conf'][i])
+            if len(word) > 0 and conf > 30: # Filter low confidence gibberish
                 x, y, w, h = (ocr_data['left'][i], ocr_data['top'][i], ocr_data['width'][i], ocr_data['height'][i])
-                
-                # Correct Y-axis coordinate inversion mapping OpenCV top-left origin to AutoCAD bottom-left origin
                 cad_y = img_h - (y + h)
-                text_entities.append({"text": word, "x": x, "y": cad_y, "h": h})
+                text_entities.append({"text": word, "x": x, "y": cad_y, "h": max(h, 8)})
                 
-                cv2.rectangle(img, (x-2, y-2), (x+w+2, y+h+2), (255, 255, 255), -1)
+                # Expand rectangle mask slightly to completely wipe out solid letter fills
+                cv2.rectangle(mask, (x-4, y-4), (x+w+4, y+h+4), (255, 255, 255), -1)
 
-        _, bin_img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        # 2. Thresholding on the masked image (leaving only clean gridlines and borders)
+        _, bin_img = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY_INV)
         
-        kernel = np.ones((3,3), np.uint8)
-        thick_lines_img = cv2.erode(bin_img, kernel, iterations=1)
-        thin_lines_img = cv2.subtract(bin_img, thick_lines_img)
+        bmp_path = os.path.join(temp_dir, "lines.bmp")
+        dxf_path = os.path.join(temp_dir, "lines.dxf")
+        cv2.imwrite(bmp_path, cv2.bitwise_not(bin_img))
         
-        thick_bmp = os.path.join(temp_dir, "thick.bmp")
-        thin_bmp = os.path.join(temp_dir, "thin.bmp")
-        cv2.imwrite(thick_bmp, cv2.bitwise_not(thick_lines_img))
-        cv2.imwrite(thin_bmp, cv2.bitwise_not(thin_lines_img))
+        run_potrace(bmp_path, dxf_path)
         
-        thick_dxf = os.path.join(temp_dir, "thick.dxf")
-        thin_dxf = os.path.join(temp_dir, "thin.dxf")
-        run_potrace(thick_bmp, thick_dxf)
-        run_potrace(thin_bmp, thin_dxf)
-        
-        # Build Master CAD Document with neutral default colors (7)
+        # 3. Build Master CAD Document
         master_doc = ezdxf.new(dxfversion='R2010')
-        master_doc.layers.add("THICK_LINES", color=7)
-        master_doc.layers.add("THIN_LINES", color=7)
-        master_doc.layers.add("OCR_TEXT", color=7)
+        master_doc.layers.add("GEOMETRY", color=7)
+        master_doc.layers.add("TEXT", color=7)
         
-        # Safely import entities to prevent NoneType object errors
-        for d_path, layer_name in [(thick_dxf, "THICK_LINES"), (thin_dxf, "THIN_LINES")]:
-            if not os.path.exists(d_path): continue
-            temp_doc = ezdxf.readfile(d_path)
+        if os.path.exists(dxf_path):
+            temp_doc = ezdxf.readfile(dxf_path)
             for entity in temp_doc.modelspace():
-                entity.dxf.layer = layer_name
+                entity.dxf.layer = "GEOMETRY"
             importer = Importer(temp_doc, master_doc)
             importer.import_modelspace()
             importer.finalize()
 
         msp = master_doc.modelspace()
         
+        # 4. Add Clean Text Entities without hollow outlines
         for t in text_entities:
-            msp.add_text(t["text"], dxfattribs={'layer': 'OCR_TEXT', 'height': t["h"]}).set_placement((t["x"], t["y"]))
+            msp.add_text(
+                t["text"], 
+                dxfattribs={
+                    'layer': 'TEXT', 
+                    'height': float(t["h"]),
+                    'style': 'Standard'
+                }
+            ).set_placement((float(t["x"]), float(t["y"])))
 
+        # 5. Page Scaling Transformation
         if pagesize != "ORIGINAL":
             target_w = 297 if pagesize == "A4" else 420
             if units == "cm": target_w /= 10
             elif units == "in": target_w /= 25.4
             
             scale_factor = target_w / img_w
-            
-            # Corrected Matrix Scaling: Z must be 1.0, not 0
             transform_matrix = Matrix44.scale(scale_factor, scale_factor, 1.0)
+            
             for entity in msp:
                 if hasattr(entity, 'transform'):
                     entity.transform(transform_matrix)
